@@ -3,6 +3,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from matplotlib import pyplot as plt
 from matplotlib.figure import Figure
+from matplotlib.axes import Axes
 import numpy as np
 from typing import Callable, cast
 import streamlit as st
@@ -56,14 +57,17 @@ class LinearClassification:
 
     def __init__(self) -> None:
         # force sklearn to return X, y tuple for static typing
-
         X, y = cast(tuple[np.ndarray, np.ndarray], load_breast_cancer(return_X_y=True))
 
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
+        X_train = cast(np.ndarray, X_train)
+        X_test = cast(np.ndarray, X_test)
+        y_train = cast(np.ndarray, y_train)
+        y_test = cast(np.ndarray, y_test)
         self.__N: int = X_train.shape[0]
         self.__D: int = X_train.shape[1]
 
-        self.__scaler = StandardScaler()
+        self.__scaler: StandardScaler = StandardScaler()
         X_train = self.__scaler.fit_transform(X_train)
         X_test = self.__scaler.transform(X_test)
 
@@ -88,18 +92,18 @@ class LinearClassification:
         Returns:
             Figure: Matplotlib figure containing the loss plot.
         """
-        train_losses = np.zeros(epochs)
-        test_losses = np.zeros(epochs)
+        train_losses: np.ndarray = np.zeros(epochs)
+        test_losses: np.ndarray = np.zeros(epochs)
         for it in range(epochs):
             self.optimizer.zero_grad()
-            outputs = self.model(self.X_train)
-            loss = self.criterion(outputs, self.y_train)
+            outputs: torch.Tensor = self.model(self.X_train)
+            loss: torch.Tensor = self.criterion(outputs, self.y_train)
 
             loss.backward()
             self.optimizer.step()
 
-            outputs_test = self.model(self.X_test)
-            loss_test = self.criterion(outputs_test, self.y_test)
+            outputs_test: torch.Tensor = self.model(self.X_test)
+            loss_test: torch.Tensor = self.criterion(outputs_test, self.y_test)
 
             train_losses[it] = loss.item()
             test_losses[it] = loss_test.item()
@@ -112,6 +116,8 @@ class LinearClassification:
                     pass
 
         figure, plotted = plt.subplots()
+        figure = cast(Figure, figure)
+        plotted = cast(Axes, plotted)
         # epochs on x-axis, loss on y-axis
         plotted.plot(train_losses, label="Training loss", color='blue')
         plotted.plot(test_losses, label="Test loss", color='orange')
@@ -130,13 +136,13 @@ class LinearClassification:
             return "Model is not trained"
         
         with torch.no_grad():
-            p_train = self.model(self.X_train)
-            p_train = np.round(p_train.numpy())
-            train_acc = np.mean(p_train == self.y_train.numpy())
+            p_train_t: torch.Tensor = self.model(self.X_train)
+            p_train: np.ndarray = np.round(p_train_t.numpy())
+            train_acc: float = float(np.mean(p_train == self.y_train.numpy()))
 
-            p_test = self.model(self.X_test)
-            p_test = np.round(p_test.numpy())
-            test_acc = np.mean(p_test == self.y_test.numpy())
+            p_test_t: torch.Tensor = self.model(self.X_test)
+            p_test: np.ndarray = np.round(p_test_t.numpy())
+            test_acc: float = float(np.mean(p_test == self.y_test.numpy()))
             return f"Train accuracy: {train_acc * 100:.2f}%, Test accuracy: {test_acc * 100:.2f}%"
 
 if __name__ == "__main__":
