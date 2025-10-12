@@ -1,3 +1,11 @@
+"""Streamlit app for binary linear classification using PyTorch.
+
+This module loads the Breast Cancer Wisconsin dataset, standardizes
+the features, trains a simple logistic regression (linear layer + sigmoid)
+model with binary cross-entropy loss, and visualizes training/test loss
+curves and accuracy inside a Streamlit UI.
+"""
+
 from sklearn.datasets import load_breast_cancer
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
@@ -12,50 +20,76 @@ import torch.nn as nn
 import torch.optim as optim
 
 class LinearClassification:
+    """Binary linear classification on the Breast Cancer dataset.
+
+    This class encapsulates data loading, preprocessing with
+    ``StandardScaler``, model definition (a linear layer followed by
+    a sigmoid), training with ``BCELoss`` and ``Adam`` optimizer, and
+    simple evaluation utilities (loss plot and accuracy).
+    """
 
     @property
     def N(self) -> int:
+        """Number of training samples (rows) in the dataset."""
         return self.__N
 
     @property
     def D(self) -> int:   
+        """Number of features (columns) after preprocessing."""
         return self.__D
 
     @property
     def _scaler(self) -> StandardScaler:
+        """Fitted ``StandardScaler`` used to standardize features."""
         return self.__scaler
 
     @property
     def model(self) -> nn.Module:
+        """The PyTorch model (``nn.Sequential`` with ``Linear`` + ``Sigmoid``)."""
         return self.__model
 
     @property
     def criterion(self) -> nn.BCELoss:
+        """Loss function used for training (binary cross-entropy)."""
         return self.__criterion
 
     @property
     def optimizer(self) -> optim.Adam:
+        """Optimizer used for training (``Adam``)."""
         return self.__optimizer
 
     #region: Properties for raw data as numpy arrays
     @property
     def X_train(self) -> torch.Tensor:
+        """Training features as a float32 ``torch.Tensor`` of shape (N, D)."""
         return self.__X_train_tensor
 
     @property
     def y_train(self) -> torch.Tensor:
+        """Training labels as a float32 ``torch.Tensor`` of shape (N, 1)."""
         return self.__y_train_tensor
 
     @property
     def X_test(self) -> torch.Tensor:
+        """Test features as a float32 ``torch.Tensor`` of shape (N_test, D)."""
         return self.__X_test_tensor
 
     @property
     def y_test(self) -> torch.Tensor:
+        """Test labels as a float32 ``torch.Tensor`` of shape (N_test, 1)."""
         return self.__y_test_tensor
     #endregion
 
     def __init__(self) -> None:
+        """Initialize data, preprocessing, model, loss, and optimizer.
+
+        Steps performed:
+        1. Load the Breast Cancer dataset as numpy arrays.
+        2. Split into train/test sets and standardize using ``StandardScaler``.
+        3. Build a simple logistic regression model (``Linear`` + ``Sigmoid``).
+        4. Create the loss function (``BCELoss``) and optimizer (``Adam``).
+        5. Convert numpy arrays to float32 ``torch.Tensor`` objects.
+        """
         # force sklearn to return X, y tuple for static typing
         X, y = cast(tuple[np.ndarray, np.ndarray], load_breast_cancer(return_X_y=True))
 
@@ -129,6 +163,12 @@ class LinearClassification:
 
     @property
     def accuracy(self) -> str:
+        """Compute formatted train/test accuracy string.
+
+        Returns:
+            str: A human-readable accuracy summary for train and test sets.
+                 Returns messages if data is empty or model is unavailable.
+        """
         if self.X_train.shape[0] == 0 or self.X_test.shape[0] == 0:
             return "Train or test set is empty"
 

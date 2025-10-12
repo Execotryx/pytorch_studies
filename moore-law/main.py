@@ -1,3 +1,11 @@
+"""Streamlit app modeling Moore's Law with linear regression in PyTorch.
+
+This module downloads the Moore's Law dataset if needed, transforms the
+target to log2 scale, standardizes features/targets, trains a simple linear
+model with MSE loss and SGD, and renders loss and fitted results in a
+Streamlit UI.
+"""
+
 import torch
 import torch.nn as nn
 import pandas as pd
@@ -10,43 +18,53 @@ from pathlib import Path
 from typing import Callable
 
 class MooresLaw:
+    """Handle data preparation, training, and visualization for Moore's Law."""
     MOORES_LAW_DATA_URL: str = "https://raw.githubusercontent.com/lazyprogrammer/machine_learning_examples/master/tf2.0/moore.csv"
     FILE_NAME: str = "moore.csv"
 
     @property
     def X(self) -> np.ndarray:
+        """Standardized feature array (years) with shape (N, 1)."""
         return self.__X
 
     @property
     def y(self) -> np.ndarray:
+        """Standardized log2 transistor counts with shape (N, 1)."""
         return self.__y
 
     @property
     def inputs(self) -> torch.Tensor:
+        """Tensor view of ``X`` used as model input."""
         return self.__inputs
 
     @property
     def targets(self) -> torch.Tensor:
+        """Tensor view of ``y`` used as regression targets."""
         return self.__targets
 
     @property
     def model(self) -> nn.Linear:
+        """The underlying PyTorch linear model (1 input, 1 output)."""
         return self.__model
 
     @property
     def criterion(self) -> nn.MSELoss:
+        """Mean squared error loss function used for training."""
         return self.__criterion
 
     @property
     def optimizer(self) -> torch.optim.SGD:
+        """SGD optimizer configured with momentum for faster convergence."""
         return self.__optimizer
 
     def __get_data_if_needed(self) -> None:
+        """Download the Moore's Law CSV file if it's not present locally."""
         out: Path = Path(self.FILE_NAME)
         if not out.exists():
             req.urlretrieve(self.MOORES_LAW_DATA_URL, out)
 
     def __scale(self) -> None:
+        """Standardize features and targets to zero mean and unit variance."""
         mx: float = self.X.mean()
         sx: float = self.X.std()
 
@@ -57,6 +75,7 @@ class MooresLaw:
         self.__y = (self.y - my) / sy
 
     def __init__(self):
+        """Load data, apply log transform and scaling, and build the model."""
         self.__get_data_if_needed()
         data: np.ndarray = pd.read_csv(self.FILE_NAME, header=None).values
 
@@ -111,6 +130,7 @@ class MooresLaw:
         return figure
 
     def show_results(self) -> Figure:
+        """Create a matplotlib figure showing data points and fitted line."""
         figure, plotted = plt.subplots()
         plotted.scatter(self.X, self.y, label="Original data", color='blue')
         predicted = self.model(self.inputs).detach().numpy()
