@@ -13,6 +13,10 @@ class BaseModel(ABC):
         """The underlying PyTorch model."""
         return self.__model
 
+    @_model.setter
+    def _model(self, model: Module) -> None:
+        self.__model = model
+
     @property
     def _criterion(self) -> Module | None:
         """The loss function used for training."""
@@ -32,9 +36,9 @@ class BaseModel(ABC):
         self.__optimizer = optimizer
     
     def __init__(self):
-        self.__model: Module | None = None
-        self.__criterion: Module | None = None
-        self.__optimizer: torch.optim.Optimizer | None = None
+        self.__model = None  # type: Module | None
+        self.__criterion = None  # type: Module | None
+        self.__optimizer = None  # type: torch.optim.Optimizer | None
 
     @abstractmethod
     def train(self, epochs: int = DEFAULT_EPOCHS) -> Figure | None:
@@ -48,15 +52,19 @@ class BaseModel(ABC):
     def load(self):
         pass
 
-    def save_model(self, filepath: str):
-        if self.__model is not None:
-            torch.save(self.__model.state_dict(), filepath)
+    def save_model(self, filepath: str) -> None:
+        """Save model state to disk if model exists."""
+        if self._model:
+            torch.save(self._model.state_dict(), filepath)
 
-    def load_model(self, filepath: str):
+    def load_model(self, filepath: str) -> None:
+        """Load model state from disk if file exists."""
         if exists(filepath):
-            self.__model = self.__load_model_architecture()
-            self.__model.load_state_dict(torch.load(filepath))
+            # reconstruct architecture then load state
+            self.__model = self._load_model_architecture()
+            state_dict = torch.load(filepath)
+            self.__model.load_state_dict(state_dict)
 
     @abstractmethod
-    def __load_model_architecture(self) -> Module:
+    def _load_model_architecture(self) -> Module:
         pass

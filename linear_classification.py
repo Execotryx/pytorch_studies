@@ -47,7 +47,7 @@ class LinearClassification(BaseModel):
         """Fitted ``StandardScaler`` used to standardize features."""
         return self.__scaler
 
-    #region: Properties for raw data as numpy arrays
+    # region: Properties for raw data as numpy arrays
     @property
     def X_train(self) -> torch.Tensor:
         """Training features as a float32 ``torch.Tensor`` of shape (N, D)."""
@@ -67,57 +67,46 @@ class LinearClassification(BaseModel):
     def y_test(self) -> torch.Tensor:
         """Test labels as a float32 ``torch.Tensor`` of shape (N_test, 1)."""
         return self.__y_test_tensor
-    #endregion
+    # endregion
 
-    def __load_model_architecture(self) -> nn.Module:
+    def _initialize_from_scratch(self) -> None:
+        """Load and preprocess data, build model, and setup tensors from scratch."""
+        # force sklearn to return X, y tuple for static typing
+        X, y = cast(tuple[np.ndarray, np.ndarray], load_breast_cancer(return_X_y=True))
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
+        self.__N = X_train.shape[0]
+        self.__D = X_train.shape[1]
+        self.__scaler = StandardScaler()
+        X_train_scaled = self.__scaler.fit_transform(X_train)
+        X_test_scaled = self.__scaler.transform(X_test)
+        # build model architecture
+        self._model = self._load_model_architecture()
+        # prepare tensors
+        self.__X_train_tensor = torch.from_numpy(X_train_scaled.astype("float32"))
+        self.__y_train_tensor = torch.from_numpy(y_train.astype("float32")).reshape(-1, 1)
+        self.__X_test_tensor = torch.from_numpy(X_test_scaled.astype("float32"))
+        self.__y_test_tensor = torch.from_numpy(y_test.astype("float32")).reshape(-1, 1)
+
+    def _setup_training(self) -> None:
+        """Setup loss function and optimizer if the model is available."""
+        if self._model is not None:
+            self._criterion = nn.BCELoss()
+            self._optimizer = optim.Adam(self._model.parameters())
+
+    def _load_model_architecture(self) -> nn.Module:
         return nn.Sequential(
             nn.Linear(30, 1),
             nn.Sigmoid()
         )
 
     def __init__(self) -> None:
-        """Initialize data, preprocessing, model, loss, and optimizer.
-
-        Steps performed:
-        1. Load the Breast Cancer dataset as numpy arrays.
-        2. Split into train/test sets and standardize using ``StandardScaler``.
-        3. Build a simple logistic regression model (``Linear`` + ``Sigmoid``).
-        4. Create the loss function (``BCELoss``) and optimizer (``Adam``).
-        5. Convert numpy arrays to float32 ``torch.Tensor`` objects.
-        """
-        BaseModel.__init__(self)
+        """Initialize data, preprocessing, model, loss, and optimizer."""
+        super().__init__()
         if not exists(self.PATH_TO_SAVED_MODEL):
-            # force sklearn to return X, y tuple for static typing
-            X, y = cast(tuple[np.ndarray, np.ndarray], load_breast_cancer(return_X_y=True))
-
-            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
-            X_train = cast(np.ndarray, X_train)
-            X_test = cast(np.ndarray, X_test)
-            y_train = cast(np.ndarray, y_train)
-            y_test = cast(np.ndarray, y_test)
-            self.__N: int = X_train.shape[0]
-            self.__D: int = X_train.shape[1]
-
-            self.__scaler: StandardScaler = StandardScaler()
-            X_train = self.__scaler.fit_transform(X_train)
-            X_test = self.__scaler.transform(X_test)
-
-            self.__model: nn.Sequential = nn.Sequential(
-                nn.Linear(self.D, 1),
-                nn.Sigmoid()
-            )
-
-            self.__X_train_tensor: torch.Tensor = torch.from_numpy(X_train.astype("float32"))
-            self.__y_train_tensor: torch.Tensor = torch.from_numpy(y_train.astype("float32")).reshape(-1, 1)
-            self.__X_test_tensor: torch.Tensor = torch.from_numpy(X_test.astype("float32"))
-            self.__y_test_tensor: torch.Tensor = torch.from_numpy(y_test.astype("float32")).reshape(-1, 1)
-
+            self._initialize_from_scratch()
         else:
             self.load_model(self.PATH_TO_SAVED_MODEL)
-
-        if self._model is not None:
-            self._criterion = nn.BCELoss()
-            self._optimizer = optim.Adam(self._model.parameters())
+        self._setup_training()
 
     def train(self, epochs: int = 100) -> Figure | None:
         """
