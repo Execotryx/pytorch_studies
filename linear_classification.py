@@ -13,13 +13,15 @@ from matplotlib import pyplot as plt
 from matplotlib.figure import Figure
 from matplotlib.axes import Axes
 import numpy as np
-from typing import Callable, cast
+from typing import cast
 import streamlit as st
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from os.path import exists
+from base_model import BaseModel
 
-class LinearClassification:
+class LinearClassification(BaseModel):
     """Binary linear classification on the Breast Cancer dataset.
 
     This class encapsulates data loading, preprocessing with
@@ -27,6 +29,8 @@ class LinearClassification:
     a sigmoid), training with ``BCELoss`` and ``Adam`` optimizer, and
     simple evaluation utilities (loss plot and accuracy).
     """
+
+    PATH_TO_SAVED_MODEL: str = "linear_classification_model.pt"
 
     @property
     def N(self) -> int:
@@ -42,21 +46,6 @@ class LinearClassification:
     def _scaler(self) -> StandardScaler:
         """Fitted ``StandardScaler`` used to standardize features."""
         return self.__scaler
-
-    @property
-    def model(self) -> nn.Module:
-        """The PyTorch model (``nn.Sequential`` with ``Linear`` + ``Sigmoid``)."""
-        return self.__model
-
-    @property
-    def criterion(self) -> nn.BCELoss:
-        """Loss function used for training (binary cross-entropy)."""
-        return self.__criterion
-
-    @property
-    def optimizer(self) -> optim.Adam:
-        """Optimizer used for training (``Adam``)."""
-        return self.__optimizer
 
     #region: Properties for raw data as numpy arrays
     @property
@@ -80,6 +69,12 @@ class LinearClassification:
         return self.__y_test_tensor
     #endregion
 
+    def __load_model_architecture(self) -> nn.Module:
+        return nn.Sequential(
+            nn.Linear(30, 1),
+            nn.Sigmoid()
+        )
+
     def __init__(self) -> None:
         """Initialize data, preprocessing, model, loss, and optimizer.
 
@@ -90,76 +85,87 @@ class LinearClassification:
         4. Create the loss function (``BCELoss``) and optimizer (``Adam``).
         5. Convert numpy arrays to float32 ``torch.Tensor`` objects.
         """
-        # force sklearn to return X, y tuple for static typing
-        X, y = cast(tuple[np.ndarray, np.ndarray], load_breast_cancer(return_X_y=True))
+        BaseModel.__init__(self)
+        if not exists(self.PATH_TO_SAVED_MODEL):
+            # force sklearn to return X, y tuple for static typing
+            X, y = cast(tuple[np.ndarray, np.ndarray], load_breast_cancer(return_X_y=True))
 
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
-        X_train = cast(np.ndarray, X_train)
-        X_test = cast(np.ndarray, X_test)
-        y_train = cast(np.ndarray, y_train)
-        y_test = cast(np.ndarray, y_test)
-        self.__N: int = X_train.shape[0]
-        self.__D: int = X_train.shape[1]
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
+            X_train = cast(np.ndarray, X_train)
+            X_test = cast(np.ndarray, X_test)
+            y_train = cast(np.ndarray, y_train)
+            y_test = cast(np.ndarray, y_test)
+            self.__N: int = X_train.shape[0]
+            self.__D: int = X_train.shape[1]
 
-        self.__scaler: StandardScaler = StandardScaler()
-        X_train = self.__scaler.fit_transform(X_train)
-        X_test = self.__scaler.transform(X_test)
+            self.__scaler: StandardScaler = StandardScaler()
+            X_train = self.__scaler.fit_transform(X_train)
+            X_test = self.__scaler.transform(X_test)
 
-        self.__model: nn.Sequential = nn.Sequential(
-            nn.Linear(self.D, 1),
-            nn.Sigmoid()
-        )
+            self.__model: nn.Sequential = nn.Sequential(
+                nn.Linear(self.D, 1),
+                nn.Sigmoid()
+            )
 
-        self.__criterion: nn.BCELoss = nn.BCELoss()
-        self.__optimizer: optim.Adam = optim.Adam(self.__model.parameters())
+            self.__X_train_tensor: torch.Tensor = torch.from_numpy(X_train.astype("float32"))
+            self.__y_train_tensor: torch.Tensor = torch.from_numpy(y_train.astype("float32")).reshape(-1, 1)
+            self.__X_test_tensor: torch.Tensor = torch.from_numpy(X_test.astype("float32"))
+            self.__y_test_tensor: torch.Tensor = torch.from_numpy(y_test.astype("float32")).reshape(-1, 1)
 
-        self.__X_train_tensor: torch.Tensor = torch.from_numpy(X_train.astype("float32"))
-        self.__y_train_tensor: torch.Tensor = torch.from_numpy(y_train.astype("float32")).reshape(-1, 1)
-        self.__X_test_tensor: torch.Tensor = torch.from_numpy(X_test.astype("float32"))
-        self.__y_test_tensor: torch.Tensor = torch.from_numpy(y_test.astype("float32")).reshape(-1, 1)
+        else:
+            self.load_model(self.PATH_TO_SAVED_MODEL)
 
-    def train(self, epochs: int = 100, progress_callback: Callable[[int, float], None] | None = None) -> Figure:
+        if self._model is not None:
+            self._criterion = nn.BCELoss()
+            self._optimizer = optim.Adam(self._model.parameters())
+
+    def train(self, epochs: int = 100) -> Figure | None:
         """
-        Train the model for `epochs` steps. If `progress_callback` is provided it will be called
-        after every epoch with two arguments: (epoch_number: int, loss: float).
+        Train the model for `epochs` steps.
 
         Returns:
             Figure: Matplotlib figure containing the loss plot.
         """
-        train_losses: np.ndarray = np.zeros(epochs)
-        test_losses: np.ndarray = np.zeros(epochs)
-        for it in range(epochs):
-            self.optimizer.zero_grad()
-            outputs: torch.Tensor = self.model(self.X_train)
-            loss: torch.Tensor = self.criterion(outputs, self.y_train)
 
-            loss.backward()
-            self.optimizer.step()
+        if self._model is not None and self._criterion is not None and self._optimizer is not None:
+        
+            train_losses: np.ndarray = np.zeros(epochs)
+            test_losses: np.ndarray = np.zeros(epochs)
+            for it in range(epochs):
+                self._optimizer.zero_grad()
+                outputs: torch.Tensor = self._model(self.X_train)
+                loss: torch.Tensor = self._criterion(outputs, self.y_train)
 
-            outputs_test: torch.Tensor = self.model(self.X_test)
-            loss_test: torch.Tensor = self.criterion(outputs_test, self.y_test)
+                loss.backward()
+                self._optimizer.step()
 
-            train_losses[it] = loss.item()
-            test_losses[it] = loss_test.item()
+                outputs_test: torch.Tensor = self._model(self.X_test)
+                loss_test: torch.Tensor = self._criterion(outputs_test, self.y_test)
 
-            if progress_callback is not None:
-                try:
-                    progress_callback(it + 1, loss.item())
-                except Exception:
-                    # Don't let progress UI errors stop training
-                    pass
+                train_losses[it] = loss.item()
+                test_losses[it] = loss_test.item()
 
-        figure, plotted = plt.subplots()
-        figure = cast(Figure, figure)
-        plotted = cast(Axes, plotted)
-        # epochs on x-axis, loss on y-axis
-        plotted.plot(train_losses, label="Training loss", color='blue')
-        plotted.plot(test_losses, label="Test loss", color='orange')
-        plotted.set_xlabel("Epoch")
-        plotted.set_ylabel("Loss")
-        plotted.legend()
-        plt.tight_layout()
-        return figure
+            figure, plotted = plt.subplots()
+            figure = cast(Figure, figure)
+            plotted = cast(Axes, plotted)
+            # epochs on x-axis, loss on y-axis
+            plotted.plot(train_losses, label="Training loss", color='blue')
+            plotted.plot(test_losses, label="Test loss", color='orange')
+            plotted.set_xlabel("Epoch")
+            plotted.set_ylabel("Loss")
+            plotted.legend()
+            plt.tight_layout()
+            return figure
+        
+        return None
+
+    def save(self):
+        """Save the trained model to a file."""
+        self.save_model(self.PATH_TO_SAVED_MODEL)
+
+    def load(self):
+        """Load a trained model from a file."""
+        self.load_model(self.PATH_TO_SAVED_MODEL)
 
     @property
     def accuracy(self) -> str:
@@ -172,18 +178,19 @@ class LinearClassification:
         if self.X_train.shape[0] == 0 or self.X_test.shape[0] == 0:
             return "Train or test set is empty"
 
-        if self.model is None:
+        if self._model is None:
             return "Model is not trained"
         
         with torch.no_grad():
-            p_train_t: torch.Tensor = self.model(self.X_train)
+            p_train_t: torch.Tensor = self._model(self.X_train)
             p_train: np.ndarray = np.round(p_train_t.numpy())
             train_acc: float = float(np.mean(p_train == self.y_train.numpy()))
 
-            p_test_t: torch.Tensor = self.model(self.X_test)
+            p_test_t: torch.Tensor = self._model(self.X_test)
             p_test: np.ndarray = np.round(p_test_t.numpy())
             test_acc: float = float(np.mean(p_test == self.y_test.numpy()))
             return f"Train accuracy: {train_acc * 100:.2f}%, Test accuracy: {test_acc * 100:.2f}%"
+
 
 if __name__ == "__main__":
     st.set_page_config(page_title="Linear Classification", layout="wide")
@@ -197,3 +204,4 @@ if __name__ == "__main__":
     with accuracy:
         st.write("## Accuracy")
         st.write(model.accuracy)
+        model.save()
