@@ -21,7 +21,7 @@ import torch.optim as optim
 from os.path import exists
 from base_model import BaseModel
 
-class LinearClassification(BaseModel):
+class LinearClassification(BaseModel[nn.Module, nn.Module, optim.Optimizer]):
     """Binary linear classification on the Breast Cancer dataset.
 
     This class encapsulates data loading, preprocessing with
@@ -89,9 +89,12 @@ class LinearClassification(BaseModel):
 
     def _setup_training(self) -> None:
         """Setup loss function and optimizer if the model is available."""
-        if self._model is not None:
-            self._criterion = nn.BCELoss()
-            self._optimizer = optim.Adam(self._model.parameters())
+        try:
+            model = self._model
+        except AttributeError:
+            return
+        self._criterion = nn.BCELoss()
+        self._optimizer = optim.Adam(model.parameters())
 
     def _load_model_architecture(self) -> nn.Module:
         return nn.Sequential(
@@ -115,38 +118,40 @@ class LinearClassification(BaseModel):
         Returns:
             Figure: Matplotlib figure containing the loss plot.
         """
+        try:
+            model = self._model
+            criterion = self._criterion
+            optimizer = self._optimizer
+        except AttributeError:
+            return None
 
-        if self._model is not None and self._criterion is not None and self._optimizer is not None:
-        
-            train_losses: np.ndarray = np.zeros(epochs)
-            test_losses: np.ndarray = np.zeros(epochs)
-            for it in range(epochs):
-                self._optimizer.zero_grad()
-                outputs: torch.Tensor = self._model(self.X_train)
-                loss: torch.Tensor = self._criterion(outputs, self.y_train)
+        train_losses: np.ndarray = np.zeros(epochs)
+        test_losses: np.ndarray = np.zeros(epochs)
+        for it in range(epochs):
+            optimizer.zero_grad()
+            outputs: torch.Tensor = model(self.X_train)
+            loss: torch.Tensor = criterion(outputs, self.y_train)
 
-                loss.backward()
-                self._optimizer.step()
+            loss.backward()
+            optimizer.step()
 
-                outputs_test: torch.Tensor = self._model(self.X_test)
-                loss_test: torch.Tensor = self._criterion(outputs_test, self.y_test)
+            outputs_test: torch.Tensor = model(self.X_test)
+            loss_test: torch.Tensor = criterion(outputs_test, self.y_test)
 
-                train_losses[it] = loss.item()
-                test_losses[it] = loss_test.item()
+            train_losses[it] = loss.item()
+            test_losses[it] = loss_test.item()
 
-            figure, plotted = plt.subplots()
-            figure = cast(Figure, figure)
-            plotted = cast(Axes, plotted)
-            # epochs on x-axis, loss on y-axis
-            plotted.plot(train_losses, label="Training loss", color='blue')
-            plotted.plot(test_losses, label="Test loss", color='orange')
-            plotted.set_xlabel("Epoch")
-            plotted.set_ylabel("Loss")
-            plotted.legend()
-            plt.tight_layout()
-            return figure
-        
-        return None
+        figure, plotted = plt.subplots()
+        figure = cast(Figure, figure)
+        plotted = cast(Axes, plotted)
+        # epochs on x-axis, loss on y-axis
+        plotted.plot(train_losses, label="Training loss", color='blue')
+        plotted.plot(test_losses, label="Test loss", color='orange')
+        plotted.set_xlabel("Epoch")
+        plotted.set_ylabel("Loss")
+        plotted.legend()
+        plt.tight_layout()
+        return figure
 
     def save(self):
         """Save the trained model to a file."""
@@ -167,15 +172,17 @@ class LinearClassification(BaseModel):
         if self.X_train.shape[0] == 0 or self.X_test.shape[0] == 0:
             return "Train or test set is empty"
 
-        if self._model is None:
+        try:
+            model = self._model
+        except AttributeError:
             return "Model is not trained"
         
         with torch.no_grad():
-            p_train_t: torch.Tensor = self._model(self.X_train)
+            p_train_t: torch.Tensor = model(self.X_train)
             p_train: np.ndarray = np.round(p_train_t.numpy())
             train_acc: float = float(np.mean(p_train == self.y_train.numpy()))
 
-            p_test_t: torch.Tensor = self._model(self.X_test)
+            p_test_t: torch.Tensor = model(self.X_test)
             p_test: np.ndarray = np.round(p_test_t.numpy())
             test_acc: float = float(np.mean(p_test == self.y_test.numpy()))
             return f"Train accuracy: {train_acc * 100:.2f}%, Test accuracy: {test_acc * 100:.2f}%"
