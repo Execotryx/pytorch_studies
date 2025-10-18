@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-import torchvision
+from torch.amp.grad_scaler import GradScaler
 from torchvision import transforms
 from torchvision.datasets import MNIST
 import numpy as np
@@ -122,7 +122,7 @@ class MNIST_Model(BaseModel[nn.Sequential, nn.CrossEntropyLoss, torch.optim.Adam
         train_losses = np.zeros(epochs)
         test_losses = np.zeros(epochs)
 
-        scaler = torch.cuda.amp.GradScaler(enabled=(self._device.type=="cuda"))
+        scaler = GradScaler()
 
         for it in range(epochs):
             batch_loss_sum = 0.0
