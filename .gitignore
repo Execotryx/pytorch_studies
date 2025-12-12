@@ -208,3 +208,4 @@ __marimo__/
 *.pt
 data/
 .vscode/
+*.pth
