@@ -1,7 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.cuda.amp import autocast, GradScaler
+from torch.amp import autocast_mode
+from torch.cuda.amp import GradScaler
 from torch.utils.data import DataLoader, Dataset, random_split
 from torchvision import transforms, datasets
 from PIL import Image
@@ -14,7 +15,21 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 from typing import Any
 import logging
+import math
 from unet_vgg19 import UNetVGG19
+
+
+def get_cosine_schedule_with_warmup(optimizer: optim.Optimizer, num_warmup_steps: int, 
+                                    num_training_steps: int, num_cycles: float = 0.5,
+                                    last_epoch: int = -1) -> optim.lr_scheduler.LambdaLR:
+    """Create a schedule with a learning rate that decreases following cosine after a warmup period."""
+    def lr_lambda(current_step: int) -> float:
+        if current_step < num_warmup_steps:
+            return float(current_step) / float(max(1, num_warmup_steps))
+        progress = float(current_step - num_warmup_steps) / float(max(1, num_training_steps - num_warmup_steps))
+        return max(0.0, 0.5 * (1.0 + math.cos(math.pi * float(num_cycles) * 2.0 * progress)))
+    
+    return optim.lr_scheduler.LambdaLR(optimizer, lr_lambda, last_epoch)
 
 
 class SegmentationDataset(Dataset):
@@ -184,8 +199,10 @@ def calculate_iou(predictions: torch.Tensor, targets: torch.Tensor, threshold: f
 
 def train_epoch(model: nn.Module, dataloader: DataLoader, criterion: nn.Module, 
                 optimizer: optim.Optimizer, device: torch.device, 
-                scaler: GradScaler | None = None, 
-                gradient_accumulation_steps: int = 1) -> tuple[float, float]:
+                scaler: GradScaler | None = None,
+                gradient_accumulation_steps: int = 1,
+                scheduler: Any | None = None,
+                scheduler_step_on: str = 'epoch') -> tuple[float, float]:
     """Train for one epoch with optional mixed precision and gradient accumulation."""
     model.train()
     total_loss: float = 0.0
@@ -200,7 +217,7 @@ def train_epoch(model: nn.Module, dataloader: DataLoader, criterion: nn.Module,
         masks = masks.to(device, non_blocking=True)
         
         # Forward pass with optional mixed precision
-        with autocast(enabled=use_amp):
+        with autocast_mode.autocast(device_type='cuda', enabled=use_amp):
             outputs = model(images)
             loss = criterion(outputs, masks)
             # Scale loss for gradient accumulation
@@ -220,6 +237,10 @@ def train_epoch(model: nn.Module, dataloader: DataLoader, criterion: nn.Module,
             else:
                 optimizer.step()
             optimizer.zero_grad()
+            
+            # Step scheduler if configured for step-level updates
+            if scheduler is not None and scheduler_step_on == 'step':
+                scheduler.step()
         
         # Calculate metrics (detach to save memory)
         with torch.no_grad():
@@ -255,7 +276,7 @@ def validate_epoch(model: nn.Module, dataloader: DataLoader, criterion: nn.Modul
             masks = masks.to(device, non_blocking=True)
             
             # Forward pass with optional mixed precision
-            with autocast(enabled=use_amp):
+            with autocast_mode.autocast(device_type='cuda', enabled=use_amp):
                 outputs = model(images)
                 loss = criterion(outputs, masks)
             
@@ -309,20 +330,26 @@ def main() -> None:
         'masks_dir': 'path/to/your/dataset/masks',
         
         # Training settings
-        'batch_size': 8,
-        'learning_rate': 1e-4,
-        'num_epochs': 50,
+        'batch_size': 2,  # Reduced for higher resolution (384x384)
+        'learning_rate': 3e-4,  # Higher initial LR (will be warmed up)
+        'min_lr': 1e-6,  # Minimum learning rate for cosine annealing
+        'num_epochs': 100,  # Increased for better convergence with cosine schedule
         'num_classes': 1,  # Binary segmentation
-        'image_size': (256, 256),
+        'image_size': (384, 384),  # Increased from 256x256 for better accuracy
         'device': torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
         'save_dir': 'checkpoints',
-        'early_stopping_patience': 20,
+        'early_stopping_patience': 25,  # Increased patience for cosine schedule
         
         # Memory optimization settings
         'use_amp': True,  # Automatic Mixed Precision (reduces memory by ~40%)
-        'gradient_accumulation_steps': 1,  # Simulate larger batch sizes (e.g., 4 = effective batch 32)
+        'gradient_accumulation_steps': 8,  # Effective batch size: 2 * 8 = 16
         'num_workers': 2,  # Reduced for memory efficiency
-        'pin_memory': True  # Keep True if using CUDA
+        'pin_memory': True,  # Keep True if using CUDA
+        
+        # Learning rate schedule settings
+        'use_cosine_schedule': True,  # Use cosine annealing with warmup
+        'warmup_epochs': 5,  # Warmup for first 5 epochs
+        'use_onecycle': False,  # Alternative: OneCycleLR (set to True to use instead)
     }
     
     # Create save directory
@@ -429,17 +456,63 @@ def main() -> None:
     # Loss function and optimizer
     criterion: CombinedLoss = CombinedLoss(bce_weight=0.5, dice_weight=0.5)
     optimizer: optim.AdamW = optim.AdamW(model.parameters(), lr=config['learning_rate'], weight_decay=1e-5)
-    scheduler: optim.lr_scheduler.ReduceLROnPlateau = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=5)
+    
+    # Calculate total training steps
+    steps_per_epoch = len(train_loader) // config['gradient_accumulation_steps']
+    total_training_steps = steps_per_epoch * config['num_epochs']
+    warmup_steps = steps_per_epoch * config['warmup_epochs']
+    
+    # Learning rate scheduler
+    scheduler: Any
+    scheduler_step_on: str
+    
+    if config['use_onecycle']:
+        logger.info("Using OneCycleLR scheduler")
+        scheduler = optim.lr_scheduler.OneCycleLR(
+            optimizer,
+            max_lr=config['learning_rate'],
+            total_steps=total_training_steps,
+            pct_start=config['warmup_epochs'] / config['num_epochs'],
+            anneal_strategy='cos',
+            div_factor=25.0,  # initial_lr = max_lr/25
+            final_div_factor=1e4  # min_lr = initial_lr/1e4
+        )
+        scheduler_step_on = 'step'  # Update every step
+    elif config['use_cosine_schedule']:
+        logger.info("Using Cosine schedule with warmup")
+        scheduler = get_cosine_schedule_with_warmup(
+            optimizer,
+            num_warmup_steps=warmup_steps,
+            num_training_steps=total_training_steps
+        )
+        scheduler_step_on = 'step'  # Update every step
+    else:
+        logger.info("Using ReduceLROnPlateau scheduler")
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode='min', factor=0.5, patience=5)
+        scheduler_step_on = 'epoch'  # Update every epoch
     
     # Initialize mixed precision scaler
     scaler: GradScaler | None = GradScaler() if config['use_amp'] and is_cuda else None
     
+    # Log optimization settings
+    logger.info("\n" + "="*60)
+    logger.info("OPTIMIZATION SETTINGS".center(60))
+    logger.info("="*60)
+    
     if config['use_amp'] and is_cuda:
-        logger.info("Using Automatic Mixed Precision (AMP) for memory efficiency")
+        logger.info("✓ Automatic Mixed Precision (AMP) enabled")
     if config['gradient_accumulation_steps'] > 1:
-        logger.info(f"Using gradient accumulation: {config['gradient_accumulation_steps']} steps ")
-        logger.info(f"Effective batch size: {config['batch_size'] * config['gradient_accumulation_steps']}")
+        logger.info(f"✓ Gradient accumulation: {config['gradient_accumulation_steps']} steps")
+        logger.info(f"✓ Effective batch size: {config['batch_size'] * config['gradient_accumulation_steps']}")
+    else:
+        logger.info(f"✓ Batch size: {config['batch_size']}")
+    
+    logger.info(f"✓ Initial learning rate: {config['learning_rate']:.2e}")
+    logger.info(f"✓ Total training steps: {total_training_steps:,}")
+    logger.info(f"✓ Warmup steps: {warmup_steps:,} ({config['warmup_epochs']} epochs)")
+    logger.info(f"✓ Scheduler updates: {scheduler_step_on}-level")
+    logger.info("="*60 + "\n")
     
     # Training history
     train_losses: list[float] = []
@@ -463,7 +536,9 @@ def main() -> None:
             train_loss, train_iou = train_epoch(
                 model, train_loader, criterion, optimizer, device,
                 scaler=scaler,
-                gradient_accumulation_steps=config['gradient_accumulation_steps']
+                gradient_accumulation_steps=config['gradient_accumulation_steps'],
+                scheduler=scheduler,
+                scheduler_step_on=scheduler_step_on
             )
             
             # Validate
@@ -478,8 +553,9 @@ def main() -> None:
             if is_cuda:
                 torch.cuda.empty_cache()
             
-            # Update learning rate
-            scheduler.step(val_loss)
+            # Update learning rate (only for epoch-based schedulers)
+            if scheduler_step_on == 'epoch':
+                scheduler.step(val_loss)
             
             # Record history
             train_losses.append(train_loss)
