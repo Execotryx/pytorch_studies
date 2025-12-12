@@ -1,7 +1,8 @@
 import torch
 import torch.nn.functional as F
-from torch.cuda.amp import autocast
+from torch.amp import autocast_mode
 from torchvision import transforms
+from PIL import Image
 import cv2
 import numpy as np
 import numpy.typing as npt
@@ -48,35 +49,47 @@ def load_model(checkpoint_path: str, device: torch.device, use_compile: bool = T
     return model
 
 
-# Cache normalization tensors to avoid recreation
-_IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
-_IMAGENET_STD = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+# Create transform pipeline matching training (without augmentations)
+_inference_transform = transforms.Compose([
+    transforms.Resize((384, 384)),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+])
 
-def preprocess_image(image_path: str, image_size: tuple[int, int] = (256, 256)) -> tuple[torch.Tensor, Any]:
-    """Preprocess input image for inference with optimizations."""
-    # Load image using OpenCV
-    image = cv2.imread(image_path)
+def preprocess_image(image_path: str, image_size: tuple[int, int] = (384, 384)) -> tuple[torch.Tensor, Any]:
+    """Preprocess input image for inference using PIL and transforms (matches training)."""
+    # Load image using PIL (matches training)
+    image = Image.open(image_path)
     if image is None:
         raise ValueError(f"Failed to load image from {image_path}")
     
-    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    original_image = image_rgb.copy()
+    # Convert to RGB if necessary
+    if image.mode != 'RGB':
+        image = image.convert('RGB')
     
-    # Resize image
-    image_resized = cv2.resize(image_rgb, image_size, interpolation=cv2.INTER_LINEAR)
+    # Keep original for visualization (convert to numpy array)
+    original_image = np.array(image)
     
-    # Convert to tensor and normalize (optimized)
-    image_tensor = torch.from_numpy(image_resized).permute(2, 0, 1).float().div_(255.0)
+    # Update transform if custom size is provided
+    if image_size != (384, 384):
+        transform = transforms.Compose([
+            transforms.Resize(image_size),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        ])
+    else:
+        transform = _inference_transform
     
-    # Apply ImageNet normalization using cached tensors
-    image_tensor = (image_tensor - _IMAGENET_MEAN) / _IMAGENET_STD
+    # Apply transforms (ToTensor automatically divides by 255 and converts to CHW)
+    image_tensor = transform(image)
+    assert isinstance(image_tensor, torch.Tensor), "Transform should return a tensor"
     
     # Add batch dimension
     image_tensor = image_tensor.unsqueeze(0)
     
     return image_tensor, original_image
 
-def preprocess_batch(image_paths: list[str], image_size: tuple[int, int] = (256, 256)) -> tuple[torch.Tensor, list[Any]]:
+def preprocess_batch(image_paths: list[str], image_size: tuple[int, int] = (384, 384)) -> tuple[torch.Tensor, list[Any]]:
     """Preprocess multiple images into a batch for efficient inference."""
     batch_tensors = []
     original_images = []
@@ -201,8 +214,11 @@ def inference(model: torch.nn.Module, image_path: str, device: torch.device,
         # Run inference with AMP
         use_amp = use_amp and device.type == 'cuda'
         with torch.no_grad():
-            with autocast(enabled=use_amp):
+            with autocast_mode.autocast(device_type='cuda', enabled=use_amp):
                 output = model(image_tensor)
+            
+            # Apply sigmoid to convert logits to probabilities (model uses BCEWithLogitsLoss)
+            output = torch.sigmoid(output)
             
             # Extract confidence map (avoid redundant operations)
             confidence_map = output.squeeze().cpu().numpy()
@@ -258,8 +274,11 @@ def batch_inference(model: torch.nn.Module, input_dir: str, output_dir: str,
                 
                 # Run inference on entire batch
                 with torch.no_grad():
-                    with autocast(enabled=use_amp):
+                    with autocast_mode.autocast(device_type='cuda', enabled=use_amp):
                         outputs = model(batch_tensor)
+                
+                # Apply sigmoid to convert logits to probabilities (model uses BCEWithLogitsLoss)
+                outputs = torch.sigmoid(outputs)
                 
                 # Process each output
                 for idx, (image_file, output) in enumerate(zip(batch_files, outputs)):
