@@ -210,3 +210,5 @@ data/
 .vscode/
 *.pth
 **/checkpoints/
+outputs
+logs*

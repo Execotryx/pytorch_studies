@@ -34,6 +34,18 @@ except Exception as e:
         f"Original import error:\n{e}"
     )
 
+# Optional Markdown-to-console renderer (best UX). Fallback is plain Markdown text.
+_RICH_AVAILABLE = False
+try:
+    from rich.console import Console
+    from rich.markdown import Markdown
+
+    _RICH_AVAILABLE = True
+    _RICH_CONSOLE = Console()
+except Exception:
+    _RICH_AVAILABLE = False
+    _RICH_CONSOLE = None
+
 
 # -----------------------------
 # Cross-platform path helpers
@@ -116,6 +128,60 @@ def configure_tf32(enable: bool) -> None:
     conv_backend = getattr(torch.backends.cudnn, "conv", None)
     if conv_backend is not None:
         setattr(conv_backend, "fp32_precision", "tf32" if enable else "ieee")
+
+
+# -----------------------------
+# Markdown table reporting
+# -----------------------------
+def _make_markdown_table(
+    rows: List[Dict[str, Any]],
+    columns: List[Tuple[str, str]],
+) -> str:
+    """
+    columns: list of (key, header)
+    rows: list of dicts containing those keys
+    """
+    headers = [h for _, h in columns]
+    sep = ["---"] * len(columns)
+
+    def fmt_val(v: Any) -> str:
+        if isinstance(v, float):
+            return f"{v:.4f}"
+        return str(v)
+
+    lines: List[str] = []
+    lines.append("| " + " | ".join(headers) + " |")
+    lines.append("| " + " | ".join(sep) + " |")
+    for r in rows:
+        line = "| " + " | ".join(fmt_val(r.get(k, "")) for k, _ in columns) + " |"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def print_epoch_table(
+    history: List[Dict[str, Any]],
+    window: int,
+    logger: logging.Logger,
+) -> None:
+    if not history:
+        return
+
+    view = history[-window:] if window > 0 else history
+    cols = [
+        ("epoch", "Epoch"),
+        ("train_loss", "Train Loss"),
+        ("val_dice", "Val Dice"),
+        ("val_iou", "Val IoU"),
+        ("val_acc", "Val Acc"),
+        ("best_iou", "Best IoU"),
+    ]
+    md = _make_markdown_table(view, cols)
+
+    # Prefer rich Markdown rendering (nice table in terminal); fallback to plain Markdown text.
+    if _RICH_AVAILABLE and _RICH_CONSOLE is not None:
+        _RICH_CONSOLE.print(Markdown(md))
+    else:
+        logger.info("\n" + md)
 
 
 # -----------------------------
@@ -517,13 +583,15 @@ def main() -> None:
         "amp_dtype": "float16",
         "grad_accum_steps": 1,
         "channels_last": True,
-        # ✅ constant LR requested
         "lr": 1e-4,
         "weight_decay": 1e-4,
         "save_best_metric": "iou",
         "enable_tf32": True,
         "decoder_upsample": "bilinear",
         "save_dir": "checkpoints",
+        # Markdown table controls:
+        "print_table_every": 1,   # print every N epochs
+        "table_window": 12,       # show last N epochs in table
         "freeze_schedule": {
             "enabled": True,
             "stages": [
@@ -551,6 +619,10 @@ def main() -> None:
     logger.info(f"Data root: {data_root}")
     logger.info(f"Save dir: {save_dir}")
     logger.info(f"Constant LR: {config['lr']}")
+    if _RICH_AVAILABLE:
+        logger.info("Rich detected: Markdown tables will be rendered nicely in console.")
+    else:
+        logger.info("Rich not installed: printing raw Markdown table text. (Optional: pip install rich)")
 
     if device.type == "cuda":
         torch.backends.cudnn.benchmark = True
@@ -631,6 +703,8 @@ def main() -> None:
 
     state = TrainState(epoch=0, best_metric=-1e9)
 
+    history: List[Dict[str, Any]] = []
+
     for epoch in range(int(config["epochs"])):
         state.epoch = epoch
 
@@ -642,7 +716,7 @@ def main() -> None:
             apply_freeze_schedule(model, stages_to_train=stages)
             logger.info(f"[epoch {epoch}] Encoder trainable stages: {stages}")
 
-        loss = train_one_epoch(
+        train_loss = train_one_epoch(
             model=model,
             loader=train_loader,
             optimizer=optimizer,
@@ -665,7 +739,7 @@ def main() -> None:
         )
 
         logger.info(
-            f"Epoch {epoch:03d} | loss={loss:.4f} | dice={metrics['dice']:.4f} | "
+            f"Epoch {epoch:03d} | loss={train_loss:.4f} | dice={metrics['dice']:.4f} | "
             f"iou={metrics['iou']:.4f} | acc={metrics['acc']:.4f}"
         )
 
@@ -676,6 +750,21 @@ def main() -> None:
             ckpt_path = save_dir / "best.pt"
             torch.save({"model": model.state_dict(), "epoch": epoch, "metrics": metrics}, str(ckpt_path))
             logger.info(f"Saved best checkpoint to: {ckpt_path} (best {metric_key}={state.best_metric:.4f})")
+
+        history.append(
+            {
+                "epoch": epoch,
+                "train_loss": float(train_loss),
+                "val_dice": float(metrics["dice"]),
+                "val_iou": float(metrics["iou"]),
+                "val_acc": float(metrics["acc"]),
+                "best_iou": float(state.best_metric),
+            }
+        )
+
+        every = int(config.get("print_table_every", 1))
+        if every > 0 and ((epoch + 1) % every == 0):
+            print_epoch_table(history, window=int(config.get("table_window", 12)), logger=logger)
 
         if device.type == "cuda":
             torch.cuda.empty_cache()
